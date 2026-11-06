@@ -137,10 +137,28 @@ function toast(msg, action) {
 function openSheet(html, { onClose } = {}) {
   closeSheet(true);
   const root = $('#sheet-root');
-  root.innerHTML = `<div class="scrim" data-act="close-sheet"></div><div class="sheet" role="dialog" aria-modal="true"><div class="grab"></div><div class="sheet-body">${html}</div></div>`;
+  root.innerHTML = `<div class="scrim" data-act="close-sheet"></div><div class="sheet" role="dialog" aria-modal="true"><div class="sheet-top"><div class="grab"></div><button class="sheet-x" data-act="close-sheet" aria-label="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div><div class="sheet-body">${html}</div></div>`;
   root._onClose = onClose;
+  enableSwipeDown($('.sheet', root), $('.sheet-top', root));
   requestAnimationFrame(() => requestAnimationFrame(() => root.classList.add('in-view')));
 }
+function enableSwipeDown(sheet, handle) {
+  let y0 = null, dy = 0;
+  handle.addEventListener('touchstart', (e) => { y0 = e.touches[0].clientY; dy = 0; sheet.style.transition = 'none'; }, { passive: true });
+  handle.addEventListener('touchmove', (e) => {
+    if (y0 === null) return;
+    dy = Math.max(0, e.touches[0].clientY - y0);
+    sheet.style.transform = `translateY(${dy}px)`;
+  }, { passive: true });
+  handle.addEventListener('touchend', () => {
+    if (y0 === null) return;
+    y0 = null;
+    sheet.style.transition = '';
+    sheet.style.transform = '';
+    if (dy > 90) closeSheet();
+  });
+}
+
 function closeSheet(immediate) {
   const root = $('#sheet-root');
   if (!root.firstChild) return;
@@ -911,6 +929,7 @@ document.addEventListener('change', async (e) => {
 });
 
 document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') { if ($('.fs')) closeFullQR(); else closeSheet(); return; }
   if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('.s-card')) { e.preventDefault(); openItemSheet(e.target.dataset.id); }
 });
 

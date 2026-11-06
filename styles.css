@@ -287,9 +287,15 @@ button { background: none; border: 0; padding: 0; cursor: pointer; }
 }
 .in-view .scrim { opacity: 1; }
 .in-view .sheet { transform: none; }
-.grab { width: 40px; height: 5px; border-radius: 3px; background: rgba(238, 242, 238, 0.25); margin: 9px auto 0; flex: none; }
-.sheet-body { overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 14px 20px calc(var(--sab) + 24px); }
-.sheet h3 { font: 800 23px/1.15 var(--display); letter-spacing: -0.03em; margin: 4px 0 8px; }
+.sheet-top { position: relative; flex: none; height: 52px; touch-action: none; }
+.grab { width: 40px; height: 5px; border-radius: 3px; background: rgba(238, 242, 238, 0.3); position: absolute; left: 50%; top: 9px; transform: translateX(-50%); }
+.sheet-x {
+  position: absolute; right: 14px; top: 10px; width: 36px; height: 36px; border-radius: 50%;
+  background: var(--brine-2); display: grid; place-items: center; color: var(--salt-dim);
+}
+.sheet-x svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; }
+.sheet-body { overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 0 20px calc(var(--sab) + 24px); }
+.sheet h3 { font: 800 23px/1.15 var(--display); letter-spacing: -0.03em; margin: 0 0 8px; }
 .kv { display: grid; grid-template-columns: 78px 1fr; gap: 6px 10px; font-size: 14px; margin: 12px 0; }
 .kv dt { color: var(--salt-faint); } .kv dd { margin: 0; color: var(--salt); }
 .desc { color: var(--salt-dim); font-size: 14.5px; line-height: 1.5; white-space: pre-line; margin: 14px 0; }
