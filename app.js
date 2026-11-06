@@ -34,6 +34,8 @@ function fmtTime(hhmm) {
 const toMin = (hhmm) => { const [h, m] = hhmm.split(':').map(Number); return h * 60 + m; };
 
 function nowInEvent() {
+  const ov = new URLSearchParams(location.search).get('now');
+  if (ov && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(ov)) return { date: ov.slice(0, 10), min: toMin(ov.slice(11)) };
   const parts = Object.fromEntries(
     new Intl.DateTimeFormat('en-CA', { timeZone: EVENT_TZ, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
       .formatToParts(new Date()).map((p) => [p.type, p.value])
@@ -231,6 +233,7 @@ function renderSchedule() {
       <div><h1 class="title">${dp.long}</h1><p class="sub num" id="sched-sub"></p></div>
       <button class="pill-btn" data-act="add-meeting">+ Meeting</button>
     </div>
+    <div id="upnext"></div>
     <div class="days">${DAY_ORDER.map((d) => {
       const p = dayParts(d);
       return `<button class="day ${d === S.ui.day ? 'on' : ''} ${d === n.date ? 'today' : ''}" data-act="pick-day" data-day="${d}"><span>${p.wd}</span><b>${p.n}</b></button>`;
@@ -239,9 +242,11 @@ function renderSchedule() {
       <button class="${S.ui.planOnly ? '' : 'on'}" data-act="plan-only" data-v="0">All sessions</button>
       <button class="${S.ui.planOnly ? 'on' : ''}" data-act="plan-only" data-v="1">My plan</button>
     </div>
+    ${S.ui.planOnly && (S.plan.length || S.meetings.length) ? '<button class="btn ghost sm" data-act="export-ics" style="margin-top:12px">Add my plan to Calendar with alerts</button>' : ''}
     <label class="search" style="margin-top:12px"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg><input id="sq" type="search" enterkeyhint="search" placeholder="Search talks, speakers, rooms" value="${esc(S.ui.q)}"></label>
     <div class="chips"><button class="chip ${S.ui.track ? '' : 'on'}" data-act="pick-track" data-track="">All tracks</button>${tracks.map((t) => `<button class="chip ${S.ui.track === t ? 'on' : ''}" data-act="pick-track" data-track="${esc(t)}">${esc(t)}</button>`).join('')}</div>
     <div id="sched-list"></div>`;
+  paintUpNext();
   paintScheduleList();
 }
 
@@ -281,6 +286,65 @@ function paintScheduleList() {
         </div>`;
       }).join('')}</div>
     </section>`).join('');
+}
+
+function todaysPlan() {
+  const n = nowInEvent();
+  return allItems().filter((i) => (i.mine || isPlanned(i.id)) && i.day === n.date).sort((a, b) => toMin(a.start) - toMin(b.start));
+}
+
+function paintUpNext() {
+  const host = $('#upnext');
+  if (!host) return;
+  const n = nowInEvent(), list = todaysPlan();
+  const live = list.filter((i) => toMin(i.start) <= n.min && n.min < toMin(i.end));
+  const next = list.find((i) => toMin(i.start) > n.min);
+  const it = live[0] || next;
+  if (!DAY_ORDER.includes(n.date) || !it) { host.innerHTML = ''; return; }
+  const mins = toMin(it.start) - n.min;
+  const left = live[0] ? '<b class="un-now">Now</b>' : `<b>${mins >= 60 ? Math.floor(mins / 60) + 'h ' + (mins % 60 || '') + (mins % 60 ? 'm' : '') : mins + ' min'}</b>`;
+  const meta = live[0] ? `Ends ${fmtTime(it.end)}` : `Starts ${fmtTime(it.start)}`;
+  host.innerHTML = `<button class="upnext" data-act="open-item" data-id="${esc(it.id)}">
+    <div class="un-left">${left}<span>${live[0] ? 'in session' : 'until next'}</span></div>
+    <div class="un-body"><div class="un-title">${esc(it.title)}</div><div class="un-meta">${meta}${it.room ? ' · ' + esc(shortRoom(it.room)) : ''}</div></div>
+  </button>`;
+}
+
+const notified = new Set();
+function checkReminders() {
+  if (!S.profile.name) return;
+  const n = nowInEvent();
+  for (const it of todaysPlan()) {
+    const mins = toMin(it.start) - n.min;
+    if (mins > 0 && mins <= 10 && !notified.has(it.id)) {
+      notified.add(it.id);
+      toast(`In ${mins} min: ${it.title}${it.room ? ' · ' + shortRoom(it.room) : ''}`, { label: 'Open', fn: () => openItemSheet(it.id) });
+      break;
+    }
+  }
+  if (S.ui.tab === 'schedule') paintUpNext();
+}
+
+// Salt Lake City is on MST (UTC-7) for the whole event, DST ended Nov 1 2026.
+const icsUTC = (day, hhmm) => {
+  const [y, mo, d] = day.split('-').map(Number), [h, m] = hhmm.split(':').map(Number);
+  return new Date(Date.UTC(y, mo - 1, d, h + 7, m)).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+};
+const icsEsc = (s) => String(s || '').replace(/\\/g, '\\\\').replace(/[;,]/g, (c) => '\\' + c).replace(/\r?\n/g, '\\n');
+const icsFold = (line) => line.match(/.{1,70}/gu).join('\r\n ');
+
+function buildICS() {
+  const stampNow = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+  const items = allItems().filter((i) => i.mine || isPlanned(i.id)).sort((a, b) => a.day.localeCompare(b.day) || toMin(a.start) - toMin(b.start));
+  const out = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//KubeCon Companion//EN', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH', 'X-WR-CALNAME:KubeCon NA 2026 plan'];
+  for (const i of items) {
+    const desc = [i.speakers && 'Speakers: ' + i.speakers, i.withWho && 'With: ' + i.withWho, !i.mine && 'https://events.linuxfoundation.org/kubecon-cloudnativecon-north-america/program/schedule/?id=' + i.id].filter(Boolean).join('\n');
+    out.push('BEGIN:VEVENT', `UID:${i.id}@kubecon-companion`, `DTSTAMP:${stampNow}`, `DTSTART:${icsUTC(i.day, i.start)}`, `DTEND:${icsUTC(i.day, i.end)}`,
+      icsFold('SUMMARY:' + icsEsc(i.title)), i.room ? icsFold('LOCATION:' + icsEsc(shortRoom(i.room))) : '', icsFold('DESCRIPTION:' + icsEsc(desc)),
+      'BEGIN:VALARM', 'TRIGGER:-PT10M', 'ACTION:DISPLAY', icsFold('DESCRIPTION:' + icsEsc('Starting in 10 min: ' + i.title)), 'END:VALARM', 'END:VEVENT');
+  }
+  out.push('END:VCALENDAR');
+  return out.filter(Boolean).join('\r\n');
 }
 
 function openItemSheet(id) {
@@ -822,6 +886,9 @@ document.addEventListener('click', async (e) => {
     case 'report-share': return shareOrDownload(`kubecon-${v}.md`, buildReport(v), 'text/markdown');
     case 'export-csv': return shareOrDownload('kubecon-people.csv', buildCSV(), 'text/csv');
     case 'backup': return backupAll();
+    case 'export-ics':
+      if (!S.plan.length && !S.meetings.length) return toast('Star a session first.');
+      return shareOrDownload('kubecon-plan.ics', buildICS(), 'text/calendar');
   }
 });
 
@@ -867,6 +934,9 @@ async function boot() {
   await Promise.all(S.contacts.filter((c) => c.photoId).map((c) => photoURL(c.photoId)));
   $$('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === S.ui.tab));
   render();
+  checkReminders();
+  setInterval(checkReminders, 30000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) checkReminders(); });
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
 }
 boot();
