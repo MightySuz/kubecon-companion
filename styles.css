@@ -256,6 +256,12 @@ button { background: none; border: 0; padding: 0; cursor: pointer; }
 .fs p { margin: 0; color: #4b5a62; }
 .fs button { position: absolute; top: calc(var(--sat) + 14px); right: 18px; height: 38px; padding: 0 16px; border-radius: 19px; background: #0A1A22; color: #fff; font-weight: 700; }
 
+/* ---------- Expenses ---------- */
+.amt { flex: none; text-align: right; font: 700 16px var(--rounded); letter-spacing: -0.01em; }
+.in-coupa { display: block; margin-top: 3px; font: 700 10.5px var(--display); color: var(--green); }
+.receipt { display: block; width: 100%; max-height: 36vh; object-fit: contain; border-radius: 14px; background: #000; margin-bottom: 12px; }
+select.in { background-image: none; }
+
 /* ---------- Debrief ---------- */
 .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 18px; }
 .stat { padding: 12px 6px 10px; border-radius: 16px; background: var(--ink-2); border: 1px solid var(--line); text-align: center; }

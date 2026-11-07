@@ -101,8 +101,8 @@ const photoDel = (id) => tx('photos', 'readwrite', (s) => s.delete(id));
 const S = {
   sessions: [], byId: new Map(),
   profile: { name: '', title: '', company: '', linkedin: '' },
-  plan: [], meetings: [], contacts: [], takeaways: '',
-  ui: { tab: 'schedule', day: null, planOnly: false, q: '', track: '', pq: '', pfilter: 'all' },
+  plan: [], meetings: [], contacts: [], takeaways: '', expenses: [], xdraft: null, xwork: null,
+  ui: { tab: 'schedule', day: null, planOnly: false, q: '', track: '', pq: '', pfilter: 'all', xfilter: 'all', xcur: 'USD' },
   draft: null,
 };
 const photoURLs = new Map(); // photoId -> object URL
@@ -208,7 +208,7 @@ function render() {
   const needsOnboarding = !S.profile.name;
   $('#tabs').style.display = needsOnboarding ? 'none' : '';
   if (needsOnboarding) return renderWelcome();
-  ({ schedule: renderSchedule, people: renderPeople, capture: renderCapture, badge: renderBadge, debrief: renderDebrief }[S.ui.tab])();
+  ({ schedule: renderSchedule, people: renderPeople, capture: renderCapture, badge: renderBadge, debrief: renderDebrief, expenses: renderExpenses }[S.ui.tab])();
   const n = S.contacts.length;
   const pc = $('#people-count');
   pc.hidden = !n;
@@ -444,15 +444,15 @@ function readDraftInputs() {
   for (const [id, key] of Object.entries(map)) { const v = g(id); if (v !== null) d[key] = v; }
 }
 
-async function handlePhotoFile(file) {
+async function handlePhotoFile(file, max = 900, quality = 0.78) {
   if (!file) return;
   try {
     const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
-    const max = 900, scale = Math.min(1, max / Math.max(bmp.width, bmp.height));
+    const scale = Math.min(1, max / Math.max(bmp.width, bmp.height));
     const c = document.createElement('canvas');
     c.width = Math.round(bmp.width * scale); c.height = Math.round(bmp.height * scale);
     c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
-    const blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.78));
+    const blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', quality));
     const id = uid();
     await photoPut(id, blob);
     photoURLs.set(id, URL.createObjectURL(blob));
@@ -548,6 +548,142 @@ function contactFromSheet(id) {
   c.contact = $('#e-contact').value.trim();
   c.nextStep = $('#e-next').value.trim();
   return c;
+}
+
+/* ----- expenses ----- */
+const X_CATS = ['Meals', 'Hotel', 'Flight', 'Ground transport', 'Conference', 'Other'];
+const X_CUR = ['USD', 'INR', 'EUR', 'GBP', 'CAD'];
+const X_PAY = [['personal', 'My card'], ['company', 'Company card']];
+
+const money = (n, c) => new Intl.NumberFormat('en-US', { style: 'currency', currency: c }).format(n);
+function totalsStr(list) {
+  const t = {};
+  list.forEach((e) => (t[e.currency] = (t[e.currency] || 0) + e.amount));
+  return Object.entries(t).map(([c, n]) => money(n, c)).join(' + ') || money(0, 'USD');
+}
+const blankX = () => ({ amount: '', currency: S.ui.xcur, cat: 'Meals', merchant: '', date: nowInEvent().date, pay: 'personal', who: '', photoId: '' });
+
+async function renderExpenses() {
+  const f = S.ui.xfilter;
+  const open = S.expenses.filter((e) => !e.inCoupa);
+  let list = S.expenses.filter((e) => (f === 'all' ? true : f === 'todo' ? !e.inCoupa : e.inCoupa));
+  list.sort((a, b) => b.date.localeCompare(a.date) || b.createdAt - a.createdAt);
+  const urls = await Promise.all(list.map((e) => photoURL(e.photoId)));
+  const groups = new Map();
+  list.forEach((e, i) => { if (!groups.has(e.date)) groups.set(e.date, []); groups.get(e.date).push([e, urls[i]]); });
+
+  view().innerHTML = `
+    <h1 class="title">Expenses</h1>
+    <p class="sub num">${totalsStr(S.expenses)} · ${S.expenses.length} ${S.expenses.length === 1 ? 'receipt' : 'receipts'}${open.length ? ` · ${open.length} to enter in Coupa` : ''}</p>
+    <div class="btn-row" style="margin-top:18px">
+      <label class="btn sm" style="display:flex;align-items:center;justify-content:center">Snap a receipt<input id="x-snap" type="file" accept="image/*" capture="environment" hidden></label>
+      <button class="btn ghost sm" data-act="x-new">Add without photo</button>
+    </div>
+    <div class="chips">${[['all', 'All'], ['todo', 'To enter in Coupa'], ['done', 'Entered']].map(([k, l]) => `<button class="chip ${f === k ? 'on' : ''}" data-act="x-filter" data-v="${k}">${l}</button>`).join('')}</div>
+    ${list.length ? [...groups].map(([d, rows]) => `
+      <div class="h2" style="display:flex;justify-content:space-between"><span>${dayParts(d).wd}, ${dayParts(d).md}</span><span class="num">${totalsStr(rows.map((r) => r[0]))}</span></div>
+      ${rows.map(([e, url]) => `<button class="p-row" data-act="x-open" data-id="${e.id}">
+        ${url ? `<img class="avatar" src="${url}" alt="">` : '<div class="avatar">—</div>'}
+        <div class="p-main"><div class="p-name">${esc(e.merchant || e.cat)}</div><div class="p-note">${esc(e.cat)} · ${e.pay === 'company' ? 'Company card' : 'My card'}${e.who ? ' · ' + esc(e.who) : ''}</div></div>
+        <div class="amt num">${money(e.amount, e.currency)}${e.inCoupa ? '<span class="in-coupa">In Coupa</span>' : ''}</div>
+      </button>`).join('')}`).join('') : `<div class="empty"><b>${S.expenses.length ? 'Nothing here' : 'No receipts yet'}</b>${S.expenses.length ? 'Try a different filter.' : 'Tap Snap a receipt when you pay.'}</div>`}
+    ${S.expenses.length ? `<div class="h2">Take it to Coupa</div>
+    <div class="btn-row" style="margin-top:0">
+      <button class="btn ghost sm" data-act="x-csv">Export CSV</button>
+      <button class="btn ghost sm" data-act="x-receipts">Share receipts</button>
+    </div>` : ''}`;
+}
+
+async function openExpenseSheet(mode, override) {
+  let obj;
+  if (mode === 'new') obj = override || (S.xdraft = S.xdraft || blankX());
+  else {
+    const e = S.expenses.find((x) => x.id === mode);
+    if (!e) return;
+    obj = override || { ...e, amount: String(e.amount) };
+  }
+  S.xwork = { mode, obj };
+  if (mode === 'new') S.xdraft = obj;
+  const url = await photoURL(obj.photoId);
+  const isNew = mode === 'new';
+  openSheet(`
+    <h3>${isNew ? 'Add expense' : 'Expense'}</h3>
+    ${url ? `<img class="receipt" src="${url}" alt="Receipt">` : ''}
+    <div class="photo-row">
+      <label class="photo-add"><svg viewBox="0 0 24 24"><path d="M4 8.5h3l1.6-2.5h6.8L17 8.5h3V19H4z"/><circle cx="12" cy="13.5" r="3.4"/></svg>${url ? 'Retake' : 'Take photo'}<input id="x-cam" type="file" accept="image/*" capture="environment" hidden></label>
+      <label class="photo-add" style="flex:0 0 38%">From library<input id="x-lib" type="file" accept="image/*" hidden></label>
+    </div>
+    <div class="row2">
+      <label class="field"><span>Amount</span><input class="in num" id="x-amount" inputmode="decimal" placeholder="0.00" value="${esc(obj.amount)}"></label>
+      <label class="field"><span>Currency</span><select class="in" id="x-cur">${X_CUR.map((c) => `<option ${c === obj.currency ? 'selected' : ''}>${c}</option>`).join('')}</select></label>
+    </div>
+    <label class="field"><span>Merchant</span><input class="in" id="x-merchant" autocapitalize="words" placeholder="Where you paid" value="${esc(obj.merchant)}"></label>
+    <div class="field"><span>Category</span><div class="wrap-chips">${X_CATS.map((c) => `<button class="chip ${obj.cat === c ? 'on' : ''}" data-act="x-cat" data-v="${c}">${c}</button>`).join('')}</div></div>
+    <div class="field"><span>Paid with</span><div class="wrap-chips">${X_PAY.map(([k, l]) => `<button class="chip ${obj.pay === k ? 'on' : ''}" data-act="x-pay" data-v="${k}">${l}</button>`).join('')}</div></div>
+    <div class="row2">
+      <label class="field"><span>Date</span><input class="in" id="x-date" type="date" value="${esc(obj.date)}"></label>
+      <label class="field"><span>Who was it for</span><input class="in" id="x-who" placeholder="Names, for meals" value="${esc(obj.who)}"></label>
+    </div>
+    <button class="btn" data-act="x-save" style="margin-top:6px">${isNew ? 'Save expense' : 'Save changes'}</button>
+    ${isNew ? '' : `<div class="btn-row">
+      <button class="btn ghost sm" data-act="x-coupa">${obj.inCoupa ? 'Mark not in Coupa' : 'Mark entered in Coupa'}</button>
+      <button class="btn danger sm" data-act="x-delete">Delete</button>
+    </div>`}`);
+}
+
+function readXInputs() {
+  const o = S.xwork && S.xwork.obj;
+  if (!o || !$('#x-amount')) return;
+  o.amount = $('#x-amount').value; o.currency = $('#x-cur').value; o.merchant = $('#x-merchant').value;
+  o.date = $('#x-date').value || o.date; o.who = $('#x-who').value;
+}
+
+async function saveExpense() {
+  readXInputs();
+  const { mode, obj: o } = S.xwork;
+  const amount = parseFloat(String(o.amount).replace(/,/g, ''));
+  if (!(amount > 0)) { toast('Add the amount first.'); return $('#x-amount')?.focus(); }
+  const rec = { ...o, amount, merchant: o.merchant.trim(), who: o.who.trim() };
+  if (mode === 'new') {
+    S.expenses.push({ ...rec, id: 'x' + uid(), createdAt: Date.now(), inCoupa: false });
+    S.xdraft = null;
+  } else {
+    S.expenses = S.expenses.map((e) => (e.id === mode ? rec : e));
+  }
+  S.ui.xcur = o.currency;
+  S.xwork = null;
+  await persist('expenses');
+  closeSheet(); render();
+  toast(mode === 'new' ? `Saved ${money(amount, o.currency)}` : 'Saved');
+}
+
+const slug = (s) => String(s || 'receipt').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 24) || 'receipt';
+
+function buildExpensesCSV() {
+  const head = ['Date', 'Merchant', 'Category', 'Amount', 'Currency', 'Paid with', 'Who it was for', 'Entered in Coupa', 'Receipt file'];
+  const rows = [...S.expenses].sort((a, b) => a.date.localeCompare(b.date) || a.createdAt - b.createdAt)
+    .map((e) => [e.date, e.merchant, e.cat, e.amount.toFixed(2), e.currency, e.pay === 'company' ? 'Company card' : 'My card', e.who, e.inCoupa ? 'yes' : 'no', e.photoId ? receiptName(e) : '']);
+  return [head, ...rows].map((r) => r.map(csvCell).join(',')).join('\n');
+}
+const receiptName = (e) => `${e.date}_${slug(e.merchant || e.cat)}_${e.amount.toFixed(2)}${e.currency}.jpg`;
+
+async function shareReceipts() {
+  const files = [];
+  for (const e of [...S.expenses].sort((a, b) => a.date.localeCompare(b.date))) {
+    if (!e.photoId) continue;
+    const blob = await photoGet(e.photoId);
+    if (blob) files.push(new File([blob], receiptName(e), { type: 'image/jpeg' }));
+  }
+  if (!files.length) return toast('No receipt photos yet.');
+  if (navigator.canShare?.({ files })) {
+    try { await navigator.share({ files, title: 'KubeCon receipts' }); return; } catch (err) { if (err.name === 'AbortError') return; }
+  }
+  for (const f of files) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(f); a.download = f.name;
+    document.body.appendChild(a); a.click(); a.remove();
+    await new Promise((r) => setTimeout(r, 250));
+  }
 }
 
 /* ----- badge ----- */
@@ -766,8 +902,8 @@ function buildVCard(c) {
 async function backupAll() {
   const toDataURL = (blob) => new Promise((r) => { const fr = new FileReader(); fr.onload = () => r(fr.result); fr.readAsDataURL(blob); });
   const photos = {};
-  for (const c of S.contacts) if (c.photoId) { const b = await photoGet(c.photoId); if (b) photos[c.photoId] = await toDataURL(b); }
-  const data = { v: 1, at: new Date().toISOString(), profile: S.profile, plan: S.plan, meetings: S.meetings, contacts: S.contacts, takeaways: S.takeaways, photos };
+  for (const c of [...S.contacts, ...S.expenses]) if (c.photoId) { const b = await photoGet(c.photoId); if (b) photos[c.photoId] = await toDataURL(b); }
+  const data = { v: 1, at: new Date().toISOString(), profile: S.profile, plan: S.plan, meetings: S.meetings, contacts: S.contacts, expenses: S.expenses, takeaways: S.takeaways, photos };
   await shareOrDownload(`kubecon-backup-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(data), 'application/json');
 }
 
@@ -776,8 +912,8 @@ async function restoreFrom(file) {
     const data = JSON.parse(await file.text());
     if (!data || data.v !== 1 || !Array.isArray(data.contacts)) throw new Error('bad');
     for (const [id, url] of Object.entries(data.photos || {})) await photoPut(id, await (await fetch(url)).blob());
-    Object.assign(S, { profile: data.profile, plan: data.plan || [], meetings: data.meetings || [], contacts: data.contacts, takeaways: data.takeaways || '' });
-    await Promise.all(['profile', 'plan', 'meetings', 'contacts', 'takeaways'].map(persist));
+    Object.assign(S, { profile: data.profile, plan: data.plan || [], meetings: data.meetings || [], contacts: data.contacts, expenses: data.expenses || [], takeaways: data.takeaways || '' });
+    await Promise.all(['profile', 'plan', 'meetings', 'contacts', 'expenses', 'takeaways'].map(persist));
     toast(`Restored ${S.contacts.length} conversations`);
     render();
   } catch (e) {
@@ -904,6 +1040,33 @@ document.addEventListener('click', async (e) => {
     case 'report-share': return shareOrDownload(`kubecon-${v}.md`, buildReport(v), 'text/markdown');
     case 'export-csv': return shareOrDownload('kubecon-people.csv', buildCSV(), 'text/csv');
     case 'backup': return backupAll();
+
+    // expenses
+    case 'x-filter': S.ui.xfilter = v; return renderExpenses();
+    case 'x-new': return openExpenseSheet('new');
+    case 'x-open': return openExpenseSheet(id);
+    case 'x-cat': case 'x-pay': {
+      readXInputs();
+      S.xwork.obj[act === 'x-cat' ? 'cat' : 'pay'] = v;
+      $$('button', t.parentElement).forEach((b) => b.classList.toggle('on', b === t));
+      return;
+    }
+    case 'x-save': return saveExpense();
+    case 'x-coupa': {
+      readXInputs();
+      const e = S.expenses.find((x) => x.id === S.xwork.mode); if (!e) return;
+      e.inCoupa = !e.inCoupa; S.xwork.obj.inCoupa = e.inCoupa;
+      await persist('expenses'); closeSheet(); render();
+      return toast(e.inCoupa ? 'Marked as entered in Coupa' : 'Marked as not entered');
+    }
+    case 'x-delete': {
+      const e = S.expenses.find((x) => x.id === S.xwork.mode); if (!e) return;
+      S.expenses = S.expenses.filter((x) => x.id !== e.id);
+      await persist('expenses'); closeSheet(); render();
+      return toast('Expense deleted', { label: 'Undo', fn: async () => { S.expenses.push(e); await persist('expenses'); render(); } });
+    }
+    case 'x-csv': return shareOrDownload('kubecon-expenses.csv', buildExpensesCSV(), 'text/csv');
+    case 'x-receipts': return shareReceipts();
     case 'export-ics':
       if (!S.plan.length && !S.meetings.length) return toast('Star a session first.');
       return shareOrDownload('kubecon-plan.ics', buildICS(), 'text/calendar');
@@ -919,6 +1082,17 @@ document.addEventListener('input', (e) => {
 });
 
 document.addEventListener('change', async (e) => {
+  if (['x-snap', 'x-cam', 'x-lib'].includes(e.target.id)) {
+    const file = e.target.files[0];
+    const inSheet = e.target.id !== 'x-snap' && S.xwork;
+    if (inSheet) readXInputs();
+    const pid = await handlePhotoFile(file, 1600, 0.82);
+    if (!pid) return;
+    if (inSheet && S.xwork.mode !== 'new') { S.xwork.obj.photoId = pid; return openExpenseSheet(S.xwork.mode, S.xwork.obj); }
+    S.xdraft = S.xdraft || blankX();
+    S.xdraft.photoId = pid;
+    return openExpenseSheet('new');
+  }
   if (e.target.id === 'c-photo') {
     readDraftInputs();
     const id = await handlePhotoFile(e.target.files[0]);
@@ -943,14 +1117,14 @@ async function boot() {
     view().innerHTML = `<div class="empty"><b>Schedule not loaded</b>Connect to the internet once, then reopen the app.</div>`;
   }
   try {
-    const [profile, plan, meetings, contacts, takeaways] = await Promise.all(['profile', 'plan', 'meetings', 'contacts', 'takeaways'].map(kvGet));
+    const [profile, plan, meetings, contacts, takeaways, expenses] = await Promise.all(['profile', 'plan', 'meetings', 'contacts', 'takeaways', 'expenses'].map(kvGet));
     if (profile) S.profile = profile;
-    S.plan = plan || []; S.meetings = meetings || []; S.contacts = contacts || []; S.takeaways = takeaways || '';
+    S.plan = plan || []; S.meetings = meetings || []; S.contacts = contacts || []; S.takeaways = takeaways || ''; S.expenses = expenses || [];
   } catch (e) {
     toast('Storage is unavailable in this browser mode.');
   }
   navigator.storage?.persist?.();
-  await Promise.all(S.contacts.filter((c) => c.photoId).map((c) => photoURL(c.photoId)));
+  await Promise.all([...S.contacts, ...S.expenses].filter((c) => c.photoId).map((c) => photoURL(c.photoId)));
   $$('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === S.ui.tab));
   render();
   checkReminders();

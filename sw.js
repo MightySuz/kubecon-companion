@@ -1,4 +1,4 @@
-const CACHE = 'kc-companion-v3';
+const CACHE = 'kc-companion-v4';
 const SHELL = [
   './', 'index.html', 'styles.css', 'app.js', 'sessions.json', 'manifest.webmanifest',
   'vendor/qrcode.js', 'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png',
