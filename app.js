@@ -10,7 +10,7 @@ const EVENT_NAME = 'KubeCon + CloudNativeCon NA 2026';
 const THEMES = ['Pain point', 'Feature ask', 'Competitor', 'OpenTelemetry', 'Pricing', 'Partnership', 'Hiring'];
 const TAG_LABEL = { hot: 'Hot', warm: 'Warm', fyi: 'FYI' };
 const DAY_ORDER = ['2026-11-08', '2026-11-09', '2026-11-10', '2026-11-11', '2026-11-12'];
-const PRIORITY_TRACKS = ['Observability', 'Platform Engineering', 'Keynote Sessions', 'AI Inference + Agentic'];
+const PRIORITY_TRACKS = ['Observability Day', 'Platform Engineering Day', 'Observability', 'Platform Engineering', 'Keynote Sessions', 'AI Inference + Agentic'];
 const TRACK_COLORS = ['#6FA8FF', '#FFC261', '#5FD6A4', '#B69CFF', '#6FE0E6', '#FF9F6F', '#E58CFF', '#A8D86F'];
 
 /* ---------- tiny helpers ---------- */
@@ -19,6 +19,14 @@ const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 const initials = (n) => (n || '?').trim().split(/\s+/).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
+
+const LF = 'https://events.linuxfoundation.org/kubecon-cloudnativecon-north-america/';
+const schedLink = (it) => it.mine ? '' : LF + (it.u === 'c' ? 'co-located-events/cncf-hosted-co-located-schedule/' : it.u === 's' ? 'co-located-events/sponsor-hosted-co-located-schedule/' : 'program/schedule/') + '?id=' + it.id;
+function coTrackFor(it) {
+  if (it.mine || it.u || !/Hosted by/i.test(it.title)) return '';
+  const tracks = [...new Set(S.sessions.filter((x) => x.u).map((x) => x.track))];
+  return tracks.find((t) => it.title.startsWith(t)) || '';
+}
 
 function trackColor(track) {
   if (track === 'Observability') return '#FF7A9A';
@@ -119,8 +127,28 @@ async function photoURL(id) {
   return url;
 }
 
+function migratePhotos() {
+  let changed = false;
+  for (const o of [...S.contacts, ...S.expenses]) {
+    if (!o.photos) { o.photos = o.photoId ? [o.photoId] : []; changed = true; }
+    if ('photoId' in o) { delete o.photoId; changed = true; }
+  }
+  return changed;
+}
+const allPhotoIds = () => [...S.contacts, ...S.expenses].flatMap((o) => o.photos || []);
+async function addPhotos(files, max, quality) {
+  const ids = [];
+  for (const f of [...files]) { const id = await handlePhotoFile(f, max, quality); if (id) ids.push(id); }
+  return ids;
+}
+async function galleryHTML(owner, oid, ids) {
+  if (!ids.length) return '';
+  const urls = await Promise.all(ids.map(photoURL));
+  return `<div class="gallery">${ids.map((id, i) => `<button class="g-item" data-act="photo-view" data-owner="${owner}" data-oid="${esc(oid)}" data-pid="${id}" aria-label="View photo ${i + 1}"><img src="${urls[i]}" alt=""></button>`).join('')}</div>`;
+}
+
 function blankDraft() {
-  return { name: '', company: '', notes: '', contact: '', tag: 'warm', themes: [], nextStep: '', photoId: '', sessionId: null, sessionAuto: true };
+  return { name: '', company: '', notes: '', contact: '', tag: 'warm', themes: [], nextStep: '', photos: [], sessionId: null, sessionAuto: true };
 }
 
 /* ---------- toast & sheets ---------- */
@@ -356,7 +384,7 @@ function buildICS() {
   const items = allItems().filter((i) => i.mine || isPlanned(i.id)).sort((a, b) => a.day.localeCompare(b.day) || toMin(a.start) - toMin(b.start));
   const out = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//KubeCon Companion//EN', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH', 'X-WR-CALNAME:KubeCon NA 2026 plan'];
   for (const i of items) {
-    const desc = [i.speakers && 'Speakers: ' + i.speakers, i.withWho && 'With: ' + i.withWho, !i.mine && 'https://events.linuxfoundation.org/kubecon-cloudnativecon-north-america/program/schedule/?id=' + i.id].filter(Boolean).join('\n');
+    const desc = [i.speakers && 'Speakers: ' + i.speakers, i.withWho && 'With: ' + i.withWho, !i.mine && schedLink(i)].filter(Boolean).join('\n');
     out.push('BEGIN:VEVENT', `UID:${i.id}@kubecon-companion`, `DTSTAMP:${stampNow}`, `DTSTART:${icsUTC(i.day, i.start)}`, `DTEND:${icsUTC(i.day, i.end)}`,
       icsFold('SUMMARY:' + icsEsc(i.title)), i.room ? icsFold('LOCATION:' + icsEsc(shortRoom(i.room))) : '', icsFold('DESCRIPTION:' + icsEsc(desc)),
       'BEGIN:VALARM', 'TRIGGER:-PT10M', 'ACTION:DISPLAY', icsFold('DESCRIPTION:' + icsEsc('Starting in 10 min: ' + i.title)), 'END:VALARM', 'END:VEVENT');
@@ -369,7 +397,8 @@ function openItemSheet(id) {
   const it = itemById(id);
   if (!it) return;
   const dp = dayParts(it.day);
-  const link = it.mine ? '' : `https://events.linuxfoundation.org/kubecon-cloudnativecon-north-america/program/schedule/?id=${it.id}`;
+  const link = schedLink(it);
+  const coTrack = coTrackFor(it);
   openSheet(`
     <h3>${esc(it.title)}</h3>
     <dl class="kv">
@@ -381,7 +410,8 @@ function openItemSheet(id) {
     </dl>
     ${it.desc ? `<div class="desc">${esc(it.desc)}${it.desc.length >= 900 ? '…' : ''}</div>` : ''}
     ${link ? `<a class="link" href="${link}" target="_blank" rel="noopener">Open on the KubeCon site</a>` : ''}
-    <div class="btn-row" style="margin-top:18px">
+    ${coTrack ? `<button class="btn sm" data-act="browse-track" data-v="${esc(coTrack)}" data-day="${it.day}" style="margin-top:18px">See this day's talks</button>` : ''}
+    <div class="btn-row" style="margin-top:${coTrack ? 10 : 18}px">
       ${it.mine
         ? `<button class="btn ghost sm" data-act="delete-meeting" data-id="${esc(it.id)}">Delete meeting</button>`
         : `<button class="btn ${isPlanned(it.id) ? 'ghost' : ''} sm" data-act="toggle-plan" data-id="${esc(it.id)}" data-close="1">${isPlanned(it.id) ? 'Remove from plan' : 'Add to plan'}</button>`}
@@ -408,12 +438,12 @@ function openMeetingSheet() {
 }
 
 /* ----- capture ----- */
-function renderCapture() {
+async function renderCapture() {
   if (!S.draft) S.draft = blankDraft();
   const d = S.draft;
   if (d.sessionAuto && d.sessionId === null) d.sessionId = currentContextSession() || '';
   const ctx = d.sessionId ? itemById(d.sessionId) : null;
-  const thumb = d.photoId && photoURLs.get(d.photoId);
+  const gallery = await galleryHTML('draft', '', d.photos);
 
   view().innerHTML = `
     <h1 class="title">New conversation</h1>
@@ -427,10 +457,9 @@ function renderCapture() {
     <div class="tagpick">${['hot', 'warm', 'fyi'].map((t) => `<button class="${d.tag === t ? 'on' : ''}" data-tag="${t}" data-act="draft-tag" data-v="${t}">${TAG_LABEL[t]}</button>`).join('')}</div>
     <label class="field"><span>Contact details, if they shared them</span><input class="in" id="c-contact" autocapitalize="off" autocorrect="off" placeholder="Email, phone or LinkedIn" value="${esc(d.contact)}"></label>
     <label class="field"><span>Next step</span><input class="in" id="c-next" placeholder="Send the deck, intro to a teammate…" value="${esc(d.nextStep)}"></label>
+    ${gallery}
     <div class="photo-row">
-      ${thumb ? `<img class="thumb" src="${thumb}" alt="">` : ''}
-      <label class="photo-add"><svg viewBox="0 0 24 24"><path d="M4 8.5h3l1.6-2.5h6.8L17 8.5h3V19H4z"/><circle cx="12" cy="13.5" r="3.4"/></svg>${thumb ? 'Replace photo' : 'Add a photo'}<input id="c-photo" type="file" accept="image/*" hidden></label>
-      ${thumb ? `<button class="pill-btn" data-act="draft-photo-clear">Remove</button>` : ''}
+      <label class="photo-add"><svg viewBox="0 0 24 24"><path d="M4 8.5h3l1.6-2.5h6.8L17 8.5h3V19H4z"/><circle cx="12" cy="13.5" r="3.4"/></svg>${d.photos.length ? 'Add more photos' : 'Add photos'}<input id="c-photo" type="file" accept="image/*" multiple hidden></label>
     </div>
     ${ctx ? `<div class="ctx"><span>Around <b>${esc(ctx.title)}</b></span><button data-act="draft-ctx-clear" aria-label="Remove session link">×</button></div>` : ''}
     <button class="btn" data-act="save-contact">Save conversation</button>`;
@@ -468,7 +497,7 @@ async function saveContact() {
   if (!d.name.trim()) { toast('Add their name first.'); $('#c-name')?.focus(); return; }
   const c = {
     id: uid(), createdAt: Date.now(), name: d.name.trim(), company: d.company.trim(), notes: d.notes.trim(),
-    contact: d.contact.trim(), tag: d.tag, themes: d.themes, nextStep: d.nextStep.trim(), photoId: d.photoId,
+    contact: d.contact.trim(), tag: d.tag, themes: d.themes, nextStep: d.nextStep.trim(), photos: d.photos,
     sessionId: d.sessionId || '', done: false,
   };
   S.contacts.unshift(c);
@@ -505,7 +534,7 @@ async function paintPeople() {
       : `<div class="empty"><b>No conversations yet</b>Tap the pink + to capture your first one.</div>`;
     return;
   }
-  const urls = await Promise.all(list.map((c) => photoURL(c.photoId)));
+  const urls = await Promise.all(list.map((c) => photoURL((c.photos || [])[0])));
   host.innerHTML = list.map((c, i) => `
     <button class="p-row" data-act="open-contact" data-id="${c.id}">
       ${urls[i] ? `<img class="avatar" src="${urls[i]}" alt="">` : `<div class="avatar">${esc(initials(c.name))}</div>`}
@@ -520,7 +549,9 @@ async function paintPeople() {
 async function openContactSheet(id) {
   const c = S.contacts.find((x) => x.id === id);
   if (!c) return;
-  const url = await photoURL(c.photoId);
+  S.editContactId = id;
+  const url = await photoURL((c.photos || [])[0]);
+  const gallery = await galleryHTML('contact', c.id, c.photos || []);
   const sess = c.sessionId ? itemById(c.sessionId) : null;
   openSheet(`
     <div style="display:flex;gap:14px;align-items:center;margin-bottom:6px">
@@ -528,10 +559,14 @@ async function openContactSheet(id) {
       <div style="min-width:0"><h3 style="margin:0">${esc(c.name)}</h3><div class="muted">${esc(c.company || 'No company')} · ${stamp(c.createdAt)}</div></div>
     </div>
     <div class="tagpick" style="margin-top:14px">${['hot', 'warm', 'fyi'].map((t) => `<button class="${c.tag === t ? 'on' : ''}" data-tag="${t}" data-act="contact-tag" data-id="${c.id}" data-v="${t}">${TAG_LABEL[t]}</button>`).join('')}</div>
+    <label class="field"><span>Name</span><input class="in" id="e-name" autocomplete="off" autocapitalize="words" value="${esc(c.name)}"></label>
+    <label class="field"><span>Company</span><input class="in" id="e-company" autocomplete="off" autocapitalize="words" value="${esc(c.company)}"></label>
     <label class="field"><span>Notes</span><textarea class="ta" id="e-notes" style="min-height:110px">${esc(c.notes)}</textarea></label>
     <label class="field"><span>Contact details</span><input class="in" id="e-contact" autocapitalize="off" value="${esc(c.contact)}"></label>
     <label class="field"><span>Next step</span><input class="in" id="e-next" value="${esc(c.nextStep)}"></label>
     <div class="field"><span>Themes</span><div class="wrap-chips">${THEMES.map((t) => `<button class="chip ${c.themes.includes(t) ? 'on' : ''}" data-act="contact-theme" data-id="${c.id}" data-v="${esc(t)}">${esc(t)}</button>`).join('')}</div></div>
+    ${gallery}
+    <div class="photo-row"><label class="photo-add"><svg viewBox="0 0 24 24"><path d="M4 8.5h3l1.6-2.5h6.8L17 8.5h3V19H4z"/><circle cx="12" cy="13.5" r="3.4"/></svg>${(c.photos || []).length ? 'Add more photos' : 'Add photos'}<input id="e-photo" type="file" accept="image/*" multiple hidden></label></div>
     ${sess ? `<div class="ctx"><span>Around <b>${esc(sess.title)}</b></span></div>` : ''}
     ${c.tag !== 'fyi' ? `<button class="btn ${c.done ? 'ghost' : ''} sm" data-act="contact-done" data-id="${c.id}" style="margin-bottom:10px">${c.done ? 'Reopen follow-up' : 'Mark follow-up done'}</button>` : ''}
     <div class="btn-row">
@@ -544,6 +579,8 @@ async function openContactSheet(id) {
 function contactFromSheet(id) {
   const c = S.contacts.find((x) => x.id === id);
   if (!c) return null;
+  c.name = $('#e-name').value.trim() || c.name;
+  c.company = $('#e-company').value.trim();
   c.notes = $('#e-notes').value.trim();
   c.contact = $('#e-contact').value.trim();
   c.nextStep = $('#e-next').value.trim();
@@ -561,14 +598,14 @@ function totalsStr(list) {
   list.forEach((e) => (t[e.currency] = (t[e.currency] || 0) + e.amount));
   return Object.entries(t).map(([c, n]) => money(n, c)).join(' + ') || money(0, 'USD');
 }
-const blankX = () => ({ amount: '', currency: S.ui.xcur, cat: 'Meals', merchant: '', date: nowInEvent().date, pay: 'personal', who: '', photoId: '' });
+const blankX = () => ({ amount: '', currency: S.ui.xcur, cat: 'Meals', merchant: '', date: nowInEvent().date, pay: 'personal', who: '', photos: [] });
 
 async function renderExpenses() {
   const f = S.ui.xfilter;
   const open = S.expenses.filter((e) => !e.inCoupa);
   let list = S.expenses.filter((e) => (f === 'all' ? true : f === 'todo' ? !e.inCoupa : e.inCoupa));
   list.sort((a, b) => b.date.localeCompare(a.date) || b.createdAt - a.createdAt);
-  const urls = await Promise.all(list.map((e) => photoURL(e.photoId)));
+  const urls = await Promise.all(list.map((e) => photoURL((e.photos || [])[0])));
   const groups = new Map();
   list.forEach((e, i) => { if (!groups.has(e.date)) groups.set(e.date, []); groups.get(e.date).push([e, urls[i]]); });
 
@@ -600,18 +637,19 @@ async function openExpenseSheet(mode, override) {
   else {
     const e = S.expenses.find((x) => x.id === mode);
     if (!e) return;
-    obj = override || { ...e, amount: String(e.amount) };
+    obj = override || { ...e, amount: String(e.amount), photos: [...(e.photos || [])] };
   }
   S.xwork = { mode, obj };
   if (mode === 'new') S.xdraft = obj;
-  const url = await photoURL(obj.photoId);
+  obj.photos = obj.photos || [];
+  const gallery = await galleryHTML('xwork', '', obj.photos);
   const isNew = mode === 'new';
   openSheet(`
     <h3>${isNew ? 'Add expense' : 'Expense'}</h3>
-    ${url ? `<img class="receipt" src="${url}" alt="Receipt">` : ''}
+    ${gallery}
     <div class="photo-row">
-      <label class="photo-add"><svg viewBox="0 0 24 24"><path d="M4 8.5h3l1.6-2.5h6.8L17 8.5h3V19H4z"/><circle cx="12" cy="13.5" r="3.4"/></svg>${url ? 'Retake' : 'Take photo'}<input id="x-cam" type="file" accept="image/*" capture="environment" hidden></label>
-      <label class="photo-add" style="flex:0 0 38%">From library<input id="x-lib" type="file" accept="image/*" hidden></label>
+      <label class="photo-add"><svg viewBox="0 0 24 24"><path d="M4 8.5h3l1.6-2.5h6.8L17 8.5h3V19H4z"/><circle cx="12" cy="13.5" r="3.4"/></svg>${obj.photos.length ? 'Add page' : 'Take photo'}<input id="x-cam" type="file" accept="image/*" capture="environment" hidden></label>
+      <label class="photo-add" style="flex:0 0 38%">From library<input id="x-lib" type="file" accept="image/*" multiple hidden></label>
     </div>
     <div class="row2">
       <label class="field"><span>Amount</span><input class="in num" id="x-amount" inputmode="decimal" placeholder="0.00" value="${esc(obj.amount)}"></label>
@@ -662,17 +700,18 @@ const slug = (s) => String(s || 'receipt').toLowerCase().replace(/[^a-z0-9]+/g, 
 function buildExpensesCSV() {
   const head = ['Date', 'Merchant', 'Category', 'Amount', 'Currency', 'Paid with', 'Who it was for', 'Entered in Coupa', 'Receipt file'];
   const rows = [...S.expenses].sort((a, b) => a.date.localeCompare(b.date) || a.createdAt - b.createdAt)
-    .map((e) => [e.date, e.merchant, e.cat, e.amount.toFixed(2), e.currency, e.pay === 'company' ? 'Company card' : 'My card', e.who, e.inCoupa ? 'yes' : 'no', e.photoId ? receiptName(e) : '']);
+    .map((e) => [e.date, e.merchant, e.cat, e.amount.toFixed(2), e.currency, e.pay === 'company' ? 'Company card' : 'My card', e.who, e.inCoupa ? 'yes' : 'no', (e.photos || []).map((_, i) => receiptName(e, i)).join('; ')]);
   return [head, ...rows].map((r) => r.map(csvCell).join(',')).join('\n');
 }
-const receiptName = (e) => `${e.date}_${slug(e.merchant || e.cat)}_${e.amount.toFixed(2)}${e.currency}.jpg`;
+const receiptName = (e, i = 0) => `${e.date}_${slug(e.merchant || e.cat)}_${e.amount.toFixed(2)}${e.currency}${i ? '_p' + (i + 1) : ''}.jpg`;
 
 async function shareReceipts() {
   const files = [];
   for (const e of [...S.expenses].sort((a, b) => a.date.localeCompare(b.date))) {
-    if (!e.photoId) continue;
-    const blob = await photoGet(e.photoId);
-    if (blob) files.push(new File([blob], receiptName(e), { type: 'image/jpeg' }));
+    for (const [i, pid] of (e.photos || []).entries()) {
+      const blob = await photoGet(pid);
+      if (blob) files.push(new File([blob], receiptName(e, i), { type: 'image/jpeg' }));
+    }
   }
   if (!files.length) return toast('No receipt photos yet.');
   if (navigator.canShare?.({ files })) {
@@ -828,7 +867,7 @@ function buildReport(kind) {
     const ids = S.plan.map(itemById).filter((i) => i && i.day === d).sort((a, b) => toMin(a.start) - toMin(b.start));
     return ids.length ? `- ${dayParts(d).wd}: ${ids.map((i) => i.title).join('; ')}` : '';
   }).filter(Boolean);
-  const photos = cs.filter((c) => c.photoId).length;
+  const photos = cs.reduce((n, c) => n + (c.photos || []).length, 0);
   return [
     head('Leadership team debrief'),
     `## My takeaways`,
@@ -902,7 +941,7 @@ function buildVCard(c) {
 async function backupAll() {
   const toDataURL = (blob) => new Promise((r) => { const fr = new FileReader(); fr.onload = () => r(fr.result); fr.readAsDataURL(blob); });
   const photos = {};
-  for (const c of [...S.contacts, ...S.expenses]) if (c.photoId) { const b = await photoGet(c.photoId); if (b) photos[c.photoId] = await toDataURL(b); }
+  for (const pid of allPhotoIds()) { const b = await photoGet(pid); if (b) photos[pid] = await toDataURL(b); }
   const data = { v: 1, at: new Date().toISOString(), profile: S.profile, plan: S.plan, meetings: S.meetings, contacts: S.contacts, expenses: S.expenses, takeaways: S.takeaways, photos };
   await shareOrDownload(`kubecon-backup-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(data), 'application/json');
 }
@@ -913,6 +952,7 @@ async function restoreFrom(file) {
     if (!data || data.v !== 1 || !Array.isArray(data.contacts)) throw new Error('bad');
     for (const [id, url] of Object.entries(data.photos || {})) await photoPut(id, await (await fetch(url)).blob());
     Object.assign(S, { profile: data.profile, plan: data.plan || [], meetings: data.meetings || [], contacts: data.contacts, expenses: data.expenses || [], takeaways: data.takeaways || '' });
+    migratePhotos();
     await Promise.all(['profile', 'plan', 'meetings', 'contacts', 'expenses', 'takeaways'].map(persist));
     toast(`Restored ${S.contacts.length} conversations`);
     render();
@@ -946,6 +986,9 @@ document.addEventListener('click', async (e) => {
     case 'plan-only': S.ui.planOnly = v === '1'; return renderSchedule();
     case 'pick-track': S.ui.track = t.dataset.track; return renderSchedule();
     case 'add-meeting': return openMeetingSheet();
+    case 'browse-track':
+      closeSheet(true); S.ui.day = t.dataset.day; S.ui.track = v; S.ui.planOnly = false; S.ui.q = '';
+      return setTab('schedule');
     case 'save-meeting': {
       const title = $('#m-title').value.trim();
       const start = $('#m-start').value, end = $('#m-end').value;
@@ -979,9 +1022,8 @@ document.addEventListener('click', async (e) => {
       readDraftInputs();
       const th = S.draft.themes; const i = th.indexOf(v);
       i < 0 ? th.push(v) : th.splice(i, 1);
-      const y = view().scrollTop; renderCapture(); view().scrollTop = y; return;
+      const y = view().scrollTop; await renderCapture(); view().scrollTop = y; return;
     }
-    case 'draft-photo-clear': readDraftInputs(); S.draft.photoId = ''; return renderCapture();
     case 'draft-ctx-clear': readDraftInputs(); S.draft.sessionId = ''; S.draft.sessionAuto = false; return renderCapture();
     case 'save-contact': return saveContact();
 
@@ -1042,6 +1084,9 @@ document.addEventListener('click', async (e) => {
     case 'backup': return backupAll();
 
     // expenses
+    case 'photo-view': return viewPhoto(t.dataset.owner, t.dataset.oid, t.dataset.pid);
+    case 'lb-close': return $('.lb')?.remove();
+    case 'lb-del': { const d = t.dataset; $('.lb')?.remove(); return deletePhoto(d.owner, d.oid, d.pid); }
     case 'x-filter': S.ui.xfilter = v; return renderExpenses();
     case 'x-new': return openExpenseSheet('new');
     case 'x-open': return openExpenseSheet(id);
@@ -1082,28 +1127,62 @@ document.addEventListener('input', (e) => {
 });
 
 document.addEventListener('change', async (e) => {
-  if (['x-snap', 'x-cam', 'x-lib'].includes(e.target.id)) {
-    const file = e.target.files[0];
-    const inSheet = e.target.id !== 'x-snap' && S.xwork;
+  const id = e.target.id;
+  if (['x-snap', 'x-cam', 'x-lib'].includes(id)) {
+    const inSheet = id !== 'x-snap' && S.xwork;
     if (inSheet) readXInputs();
-    const pid = await handlePhotoFile(file, 1600, 0.82);
-    if (!pid) return;
-    if (inSheet && S.xwork.mode !== 'new') { S.xwork.obj.photoId = pid; return openExpenseSheet(S.xwork.mode, S.xwork.obj); }
+    const ids = await addPhotos(e.target.files, 1600, 0.82);
+    if (!ids.length) return;
+    if (inSheet && S.xwork.mode !== 'new') { S.xwork.obj.photos.push(...ids); return openExpenseSheet(S.xwork.mode, S.xwork.obj); }
     S.xdraft = S.xdraft || blankX();
-    S.xdraft.photoId = pid;
+    S.xdraft.photos.push(...ids);
     return openExpenseSheet('new');
   }
-  if (e.target.id === 'c-photo') {
+  if (id === 'c-photo') {
     readDraftInputs();
-    const id = await handlePhotoFile(e.target.files[0]);
-    if (id) { S.draft.photoId = id; renderCapture(); }
-  } else if (e.target.id === 'restore') {
+    const ids = await addPhotos(e.target.files);
+    if (ids.length) { S.draft.photos.push(...ids); const y = view().scrollTop; await renderCapture(); view().scrollTop = y; }
+  } else if (id === 'e-photo') {
+    const c = contactFromSheet(S.editContactId);
+    if (!c) return;
+    const ids = await addPhotos(e.target.files);
+    c.photos = [...(c.photos || []), ...ids];
+    await persist('contacts');
+    openContactSheet(c.id);
+    render();
+  } else if (id === 'restore') {
     restoreFrom(e.target.files[0]);
   }
 });
 
+function viewPhoto(owner, oid, pid) {
+  const url = photoURLs.get(pid);
+  if (!url) return;
+  const lb = document.createElement('div');
+  lb.className = 'lb';
+  lb.innerHTML = `<img src="${url}" alt="Photo"><div class="lb-bar"><button class="pill-btn" data-act="lb-close">Close</button><button class="pill-btn danger-pill" data-act="lb-del" data-owner="${owner}" data-oid="${esc(oid)}" data-pid="${pid}">Delete photo</button></div>`;
+  document.body.appendChild(lb);
+}
+
+async function deletePhoto(owner, oid, pid) {
+  const drop = (arr) => arr.filter((x) => x !== pid);
+  if (owner === 'draft') { S.draft.photos = drop(S.draft.photos); photoDel(pid); await renderCapture(); }
+  else if (owner === 'contact') {
+    const c = S.contacts.find((x) => x.id === oid); if (!c) return;
+    c.photos = drop(c.photos || []); photoDel(pid);
+    await persist('contacts'); openContactSheet(oid); render();
+  } else if (owner === 'xwork') {
+    const w = S.xwork; if (!w) return;
+    w.obj.photos = drop(w.obj.photos);
+    if (w.mode === 'new') photoDel(pid);
+    else { const e = S.expenses.find((x) => x.id === w.mode); if (e && e.photos.includes(pid)) { /* kept until Save */ } }
+    openExpenseSheet(w.mode, w.obj);
+  }
+  photoURLs.delete(pid);
+}
+
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') { if ($('.fs')) closeFullQR(); else closeSheet(); return; }
+  if (e.key === 'Escape') { if ($('.lb')) $('.lb').remove(); else if ($('.fs')) closeFullQR(); else closeSheet(); return; }
   if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('.s-card')) { e.preventDefault(); openItemSheet(e.target.dataset.id); }
 });
 
@@ -1124,7 +1203,8 @@ async function boot() {
     toast('Storage is unavailable in this browser mode.');
   }
   navigator.storage?.persist?.();
-  await Promise.all([...S.contacts, ...S.expenses].filter((c) => c.photoId).map((c) => photoURL(c.photoId)));
+  if (migratePhotos()) { persist('contacts'); persist('expenses'); }
+  await Promise.all(allPhotoIds().map(photoURL));
   $$('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === S.ui.tab));
   render();
   checkReminders();
